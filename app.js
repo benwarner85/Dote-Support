@@ -1,6 +1,13 @@
 let DATA = null;   // full object: { meta, taxonomy, flows }
 let FLOWS = [];    // DATA.flows array
-let state = { traction: null, query: "" };
+
+const WIZ = {
+  tractionTokens: null,  // array of tokens for contains-match, or null for All traction
+  tractionLabel: null,   // label shown to user
+  system: null,          // exact dataset system label
+  stage: null,           // one of the taxonomy stages
+  keywords: "",          // optional free text
+};
 
 /* ============================= */
 /* Safe DOM Builder (Safari OK)  */
@@ -9,12 +16,11 @@ function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
 
   Object.entries(attrs).forEach(([k, v]) => {
-    // Events
     if ((k === "onClick" || k === "onclick") && typeof v === "function") {
       node.addEventListener("click", v);
       return;
     }
-    if (k === "onInput" && typeof v === "function") {
+    if ((k === "onInput" || k === "oninput") && typeof v === "function") {
       node.addEventListener("input", v);
       return;
     }
@@ -39,7 +45,77 @@ function setScreen(content) {
 }
 
 function esc(s) {
-  return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+/* ============================= */
+/* Helpers                        */
+/* ============================= */
+const STAGES = ["Entering Service", "In Service", "Removing From Service", "Reporting / Notes"];
+
+// A small set of “common traction” buttons to reduce clutter,
+// but still matches mixed traction labels via "contains".
+const COMMON_TRACTION = [
+  { label: "Class 16x", tokens: ["16x", "class 16x"] },
+  { label: "Class 150 / 158", tokens: ["150", "158", "150/2", "class 150", "class 158"] },
+  { label: "Class 387 (incl Air Fleet)", tokens: ["387", "class 387", "air fleet"] },
+  { label: "Class 80x", tokens: ["80x", "class 80x"] },
+  { label: "Other / All traction", tokens: null },
+];
+
+function flowTractionMatches(flow, tokens) {
+  if (!tokens) return true; // All traction
+  const tr = String(flow.traction || "").toLowerCase();
+  return tokens.some(t => tr.includes(String(t).toLowerCase()));
+}
+
+function getUniqueSystemsFor(tokens) {
+  const set = new Set();
+  FLOWS.forEach(f => {
+    if (flowTractionMatches(f, tokens)) {
+      const sys = (f.system || "").trim();
+      if (sys) set.add(sys);
+    }
+  });
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}
+
+function scoreFlow(flow, stage, keywords) {
+  let score = 0;
+
+  // Stage relevance: if stage section exists and non-empty, boost
+  const sec = flow.sections?.[stage];
+  if (sec && String(sec).trim().length > 0) score += 5;
+
+  const kw = String(keywords || "").trim().toLowerCase();
+  if (!kw) return score;
+
+  const hay = [
+    flow.title, flow.source, flow.traction, flow.system,
+    flow.sections?.["Entering Service"],
+    flow.sections?.["In Service"],
+    flow.sections?.["Removing From Service"],
+    flow.sections?.["Reporting / Notes"]
+  ].join(" | ").toLowerCase();
+
+  // Simple keyword scoring
+  const parts = kw.split(/\s+/).filter(Boolean);
+  parts.forEach(p => {
+    if (hay.includes(p)) score += 2;
+  });
+
+  return score;
+}
+
+function resetWizard() {
+  WIZ.tractionTokens = null;
+  WIZ.tractionLabel = null;
+  WIZ.system = null;
+  WIZ.stage = null;
+  WIZ.keywords = "";
 }
 
 /* ============================= */
@@ -49,7 +125,7 @@ function showLoading() {
   setScreen(
     el("div", { class: "card" }, [
       el("div", { class: "h1" }, "Loading…"),
-      el("div", { class: "p" }, "Fetching dataset (first load can take a moment).")
+      el("div", { class: "p" }, "Fetching dataset.")
     ])
   );
 }
@@ -59,7 +135,7 @@ function showError(message) {
     el("div", { class: "card" }, [
       el("div", { class: "h1" }, "Could not load app"),
       el("div", { class: "p", html: esc(message) }),
-      el("div", { class: "p" }, "Tip: try a Private tab if Safari is caching.")
+      el("div", { class: "p" }, "Tip: open in a Private tab if Safari is caching.")
     ])
   );
 }
@@ -68,119 +144,185 @@ function home() {
   setScreen(
     el("div", { class: "card" }, [
       el("div", { class: "h1" }, "DOTE Decision Support (V1)"),
-      el("div", { class: "p" }, "Choose guidance or search tables."),
-      el("button", { class: "primary", onClick: () => tractionScreen() }, "Start fault guidance"),
-      el("button", { class: "secondary", onClick: () => searchScreen() }, "Search tables"),
+      el("button", { class: "primary", onClick: () => { resetWizard(); wizardTraction(); } }, "Start fault guidance"),
+      el("button", { class: "secondary", onClick: () => searchScreen() }, "Search tables")
     ])
   );
 }
 
-function tractionScreen() {
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "What traction are you driving?"),
-    el("div", { class: "p" }, "Choose a common option (matches all relevant variants in the dataset)."),
-
-    el("button", { class: "primary", onClick: () => tableListScreenByContains(["16x", "Class 16x"]) }, "Class 16x"),
-    el("button", { class: "primary", onClick: () => tableListScreenByContains(["150", "158", "150/2", "Class 150", "Class 158"]) }, "Class 150 / 158"),
-    el("button", { class: "primary", onClick: () => tableListScreenByContains(["387", "Class 387", "Air Fleet"]) }, "Class 387 (incl Air Fleet)"),
-    el("button", { class: "primary", onClick: () => tableListScreenByContains(["80x", "Class 80x"]) }, "Class 80x"),
-    el("button", { class: "secondary", onClick: () => tableListScreen(null) }, "All traction"),
-
-    el("button", { class: "secondary", onClick: () => searchScreen() }, "Search instead"),
-    el("button", { class: "secondary", onClick: () => home() }, "Home"),
-  ]);
-
-  setScreen(card);
-}
-
-function tableListScreenByContains(tokens) {
-  const toks = (tokens || []).map(t => String(t).toLowerCase());
-
-  const matches = FLOWS
-    .filter(f => {
-      const tr = String(f.traction || "").toLowerCase();
-      return toks.some(t => tr.includes(t));
-    })
-    .sort((a, b) => (a.table_no ?? 0) - (b.table_no ?? 0));
+/* 1) Traction */
+function wizardTraction() {
+  const btns = COMMON_TRACTION.map(t =>
+    el("button", {
+      class: "primary",
+      onClick: () => {
+        WIZ.tractionTokens = t.tokens;
+        WIZ.tractionLabel = t.label;
+        WIZ.system = null;
+        WIZ.stage = null;
+        WIZ.keywords = "";
+        wizardSystem();
+      }
+    }, t.label)
+  );
 
   setScreen(
     el("div", { class: "card" }, [
-      el("div", { class: "h1" }, "Select table"),
-      el("div", { class: "p" }, "Filtered by traction (includes mixed traction labels)."),
-      ...matches.slice(0, 120).map(f =>
-        el("button", { class: "primary", onClick: () => viewFlow(f) },
-          `Table ${f.table_no} — ${f.title || ""}`
-        )
-      ),
-      matches.length > 120 ? el("div", { class: "p" }, "Showing first 120. Use Search for more.") : null,
-      el("button", { class: "secondary", onClick: () => tractionScreen() }, "Back"),
+      el("div", { class: "h1" }, "What traction are you driving?"),
+      el("div", { class: "p" }, "Choose a common option (covers mixed traction labels)."),
+      ...btns,
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
 }
 
-function tableListScreen(traction) {
-  state.traction = traction;
+/* 2) System (dataset labels) */
+function wizardSystem() {
+  const systems = getUniqueSystemsFor(WIZ.tractionTokens);
 
-  const matches = FLOWS
-    .filter(f => !traction || f.traction === traction)
-    .sort((a, b) => (a.table_no ?? 0) - (b.table_no ?? 0));
+  const btns = systems.map(s =>
+    el("button", {
+      class: "primary",
+      onClick: () => {
+        WIZ.system = s;
+        WIZ.stage = null;
+        wizardStage();
+      }
+    }, s)
+  );
 
-  const buttons = matches.slice(0, 80).map(f => {
-    const title = `Table ${f.table_no} — ${f.title || ""}`;
-    return el("button", { class: "primary", onClick: () => viewFlow(f) }, title);
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "What system is affected?"),
+      el("div", { class: "p" }, `Traction: ${WIZ.tractionLabel || "All traction"}`),
+      ...btns,
+      el("button", { class: "secondary", onClick: () => wizardTraction() }, "Back"),
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
+  );
+}
+
+/* 3) Stage */
+function wizardStage() {
+  const btns = STAGES.map(st =>
+    el("button", {
+      class: "primary",
+      onClick: () => {
+        WIZ.stage = st;
+        wizardKeywords();
+      }
+    }, st)
+  );
+
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "What stage are you at?"),
+      el("div", { class: "p" }, `Traction: ${WIZ.tractionLabel || "All traction"} • System: ${WIZ.system}`),
+      ...btns,
+      el("button", { class: "secondary", onClick: () => wizardSystem() }, "Back"),
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
+  );
+}
+
+/* 4) Optional keywords */
+function wizardKeywords() {
+  const input = el("input", {
+    class: "searchbox",
+    placeholder: "Optional keywords (e.g. deer, brakes applied, low air)…",
+    value: WIZ.keywords || "",
+    onInput: (e) => { WIZ.keywords = e.target.value; renderWizardResults(); }
   });
 
+  const results = el("div", { id: "wizResults" });
+
   setScreen(
     el("div", { class: "card" }, [
-      el("div", { class: "h1" }, traction ? `Tables — ${traction}` : "Tables — All traction"),
-      el("div", { class: "p" }, "Tap a table to view the guidance sections."),
-      ...buttons,
-      matches.length > 80 ? el("div", { class: "p" }, "Showing first 80. Use Search to find specific items.") : null,
-      el("button", { class: "secondary", onClick: () => tractionScreen() }, "Back"),
+      el("div", { class: "h1" }, "Any extra details?"),
+      el("div", { class: "p" }, `Traction: ${WIZ.tractionLabel || "All traction"} • System: ${WIZ.system} • Stage: ${WIZ.stage}`),
+      input,
+      el("div", { class: "p" }, "Results update as you type (or leave blank to see best matches)."),
+      results,
+      el("button", { class: "secondary", onClick: () => wizardStage() }, "Back"),
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
+
+  renderWizardResults();
 }
 
-function viewFlow(f) {
-  const sections = f.sections || {};
+/* 5) Results */
+function renderWizardResults() {
+  const container = document.getElementById("wizResults");
+  if (!container) return;
+  container.innerHTML = "";
 
-  const dnp = !!f.do_not_proceed;
+  const matches = FLOWS
+    .filter(f => flowTractionMatches(f, WIZ.tractionTokens))
+    .filter(f => String(f.system || "").trim() === String(WIZ.system || "").trim());
 
-  const sectionBlock = (label, klass, content) =>
-    el("div", { class: `section ${klass}` }, [
-      el("div", { class: "section-title" }, label),
-      el("div", { class: "p", html: esc(content || "—") })
-    ]);
+  // Score + sort
+  const scored = matches
+    .map(f => ({ f, score: scoreFlow(f, WIZ.stage, WIZ.keywords) }))
+    .sort((a,b)=> b.score - a.score || (a.f.table_no ?? 0) - (b.f.table_no ?? 0));
+
+  if (!scored.length) {
+    container.appendChild(el("div", { class: "p" }, "No matches found for that selection."));
+    return;
+  }
+
+  const top = scored.slice(0, 25);
+
+  container.appendChild(
+    el("div", { class: "p" }, `Showing top ${top.length} matches. Tap one:`)
+  );
+
+  top.forEach(({ f, score }) => {
+    const title = `Table ${f.table_no} — ${f.title || ""}`;
+    container.appendChild(
+      el("button", { class: "primary", onClick: () => viewOutcome(f) }, title)
+    );
+  });
+
+  if (scored.length > 25) {
+    container.appendChild(
+      el("div", { class: "p" }, "More matches exist — add a keyword to narrow it down.")
+    );
+  }
+}
+
+/* Outcome view: show only the chosen stage section + banner */
+function viewOutcome(flow) {
+  const stageText = flow.sections?.[WIZ.stage] || "—";
+  const dnp = !!flow.do_not_proceed;
 
   setScreen(
     el("div", { class: "card" }, [
-      el("div", { class: "h1" }, `Table ${f.table_no} — ${f.title || ""}`),
+      el("div", { class: "h1" }, `Outcome — Table ${flow.table_no}`),
+      el("div", { class: "p" }, `${flow.title || ""}`),
       dnp ? el("div", { class: "banner" }, "DO NOT PROCEED") : null,
 
-      sectionBlock("Entering Service", "blue", sections["Entering Service"]),
-      sectionBlock("In Service", "red", sections["In Service"]),
-      sectionBlock("Removing From Service", "orange", sections["Removing From Service"]),
-      sectionBlock("Reporting / Notes", "green", sections["Reporting / Notes"]),
+      el("div", { class: "section" }, [
+        el("div", { class: "section-title" }, WIZ.stage),
+        el("div", { class: "p", html: esc(stageText) })
+      ]),
 
-      el("div", { class: "p", html: `<strong>Source:</strong> ${esc(f.source || ("Table " + f.table_no))} • Dataset: V1` }),
+      el("div", { class: "p", html: `<strong>Source:</strong> ${esc(flow.source || ("Table " + flow.table_no))} • Dataset: V1` }),
 
-      el("button", { class: "secondary", onClick: () => (state.traction ? tableListScreen(state.traction) : tableListScreen(null)) }, "Back"),
+      el("button", { class: "secondary", onClick: () => wizardKeywords() }, "Back to results"),
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
 }
 
+/* ============================= */
+/* Search (fallback)              */
+/* ============================= */
 function searchScreen() {
   const input = el("input", {
     class: "searchbox",
-    placeholder: "Search (e.g. AWS, brakes, Table 9, 16x)…",
-    value: state.query || "",
-    onInput: (e) => {
-      state.query = e.target.value;
-      renderSearchResults(e.target.value);
-    }
+    placeholder: "Search anything (e.g. AWS, brakes, Table 9, 16x)…",
+    onInput: (e) => renderSearchResults(e.target.value)
   });
 
   const results = el("div", { id: "searchResults" });
@@ -193,8 +335,6 @@ function searchScreen() {
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
-
-  renderSearchResults(state.query || "");
 }
 
 function renderSearchResults(q) {
@@ -210,16 +350,14 @@ function renderSearchResults(q) {
 
   const hits = FLOWS.filter(f => {
     const hay = [
-      f.id, f.table_no, f.title, f.traction, f.source,
+      f.id, f.table_no, f.title, f.traction, f.system, f.source,
       f.sections?.["Entering Service"],
       f.sections?.["In Service"],
       f.sections?.["Removing From Service"],
       f.sections?.["Reporting / Notes"]
     ].join(" | ").toLowerCase();
 
-    // allow table number exact hit
     if (/^\d+$/.test(term) && String(f.table_no) === term) return true;
-
     return hay.includes(term);
   }).slice(0, 40);
 
@@ -230,7 +368,7 @@ function renderSearchResults(q) {
 
   hits.forEach(f => {
     container.appendChild(
-      el("button", { class: "primary", onClick: () => viewFlow(f) },
+      el("button", { class: "primary", onClick: () => viewOutcomeFromSearch(f) },
         `Table ${f.table_no} — ${f.title || ""}`
       )
     );
@@ -239,13 +377,38 @@ function renderSearchResults(q) {
   container.appendChild(el("div", { class: "p" }, "Showing up to 40 results."));
 }
 
+function viewOutcomeFromSearch(flow) {
+  // If user came from search, show all sections
+  const sections = flow.sections || {};
+  const dnp = !!flow.do_not_proceed;
+
+  const block = (label, content) =>
+    el("div", { class: "section" }, [
+      el("div", { class: "section-title" }, label),
+      el("div", { class: "p", html: esc(content || "—") })
+    ]);
+
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, `Table ${flow.table_no} — ${flow.title || ""}`),
+      dnp ? el("div", { class: "banner" }, "DO NOT PROCEED") : null,
+      block("Entering Service", sections["Entering Service"]),
+      block("In Service", sections["In Service"]),
+      block("Removing From Service", sections["Removing From Service"]),
+      block("Reporting / Notes", sections["Reporting / Notes"]),
+      el("button", { class: "secondary", onClick: () => searchScreen() }, "Back"),
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
+  );
+}
+
 /* ============================= */
 /* Boot                           */
 /* ============================= */
 async function boot() {
   showLoading();
   try {
-    const resp = await fetch("data.json?v=5");
+    const resp = await fetch("data.json?v=6");
     if (!resp.ok) throw new Error("Failed to load data.json (" + resp.status + ")");
 
     DATA = await resp.json();
