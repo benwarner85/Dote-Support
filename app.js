@@ -1,17 +1,21 @@
-let DATA = null;
+let DATA = null;   // full object: { meta, taxonomy, flows }
+let FLOWS = [];    // DATA.flows array
+let state = { traction: null, query: "" };
 
 /* ============================= */
 /* Safe DOM Builder (Safari OK)  */
 /* ============================= */
-
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
 
   Object.entries(attrs).forEach(([k, v]) => {
-
-    // Real click handlers
+    // Events
     if ((k === "onClick" || k === "onclick") && typeof v === "function") {
       node.addEventListener("click", v);
+      return;
+    }
+    if (k === "onInput" && typeof v === "function") {
+      node.addEventListener("input", v);
       return;
     }
 
@@ -34,180 +38,199 @@ function setScreen(content) {
   root.appendChild(content);
 }
 
+function esc(s) {
+  return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 /* ============================= */
 /* Screens                        */
 /* ============================= */
-
 function showLoading() {
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "Loading…"),
-    el("div", { class: "p" }, "Fetching dataset.")
-  ]);
-  setScreen(card);
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "Loading…"),
+      el("div", { class: "p" }, "Fetching dataset (first load can take a moment).")
+    ])
+  );
 }
 
 function showError(message) {
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "Could not load app"),
-    el("div", { class: "p" }, message)
-  ]);
-  setScreen(card);
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "Could not load app"),
+      el("div", { class: "p", html: esc(message) }),
+      el("div", { class: "p" }, "Tip: try a Private tab if Safari is caching.")
+    ])
+  );
 }
 
 function home() {
-  const card = el("div", { class: "card" }, [
-    el("button",
-      { class: "primary", onClick: () => startGuidance() },
-      "Start fault guidance"
-    ),
-    el("button",
-      { class: "secondary", onClick: () => searchTables() },
-      "Search tables"
-    )
-  ]);
-
-  setScreen(card);
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "DOTE Decision Support (V1)"),
+      el("div", { class: "p" }, "Choose guidance or search tables."),
+      el("button", { class: "primary", onClick: () => tractionScreen() }, "Start fault guidance"),
+      el("button", { class: "secondary", onClick: () => searchScreen() }, "Search tables"),
+    ])
+  );
 }
 
-function startGuidance() {
-  const options = [...new Set(DATA.map(x => x.traction))];
+function tractionScreen() {
+  const tractions = [...new Set(FLOWS.map(f => (f.traction || "").trim()).filter(Boolean))].sort();
 
-  const buttons = options.map(t =>
-    el("button",
-      { class: "primary", onClick: () => selectTraction(t) },
-      t
-    )
+  const list = tractions.map(t =>
+    el("button", { class: "primary", onClick: () => tableListScreen(t) }, t)
   );
 
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "What traction are you driving?"),
-    ...buttons
-  ]);
-
-  setScreen(card);
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "What traction are you driving?"),
+      ...list,
+      el("button", { class: "secondary", onClick: () => tableListScreen(null) }, "All traction"),
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
+  );
 }
 
-function selectTraction(traction) {
-  const systems = [...new Set(
-    DATA.filter(x => x.traction === traction)
-        .map(x => x.system)
-  )];
+function tableListScreen(traction) {
+  state.traction = traction;
 
-  const buttons = systems.map(s =>
-    el("button",
-      { class: "primary", onClick: () => selectSystem(traction, s) },
-      s
-    )
+  const matches = FLOWS
+    .filter(f => !traction || f.traction === traction)
+    .sort((a, b) => (a.table_no ?? 0) - (b.table_no ?? 0));
+
+  const buttons = matches.slice(0, 80).map(f => {
+    const title = `Table ${f.table_no} — ${f.title || ""}`;
+    return el("button", { class: "primary", onClick: () => viewFlow(f) }, title);
+  });
+
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, traction ? `Tables — ${traction}` : "Tables — All traction"),
+      el("div", { class: "p" }, "Tap a table to view the guidance sections."),
+      ...buttons,
+      matches.length > 80 ? el("div", { class: "p" }, "Showing first 80. Use Search to find specific items.") : null,
+      el("button", { class: "secondary", onClick: () => tractionScreen() }, "Back"),
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
   );
-
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "What system is affected?"),
-    ...buttons
-  ]);
-
-  setScreen(card);
 }
 
-function selectSystem(traction, system) {
-  const tables = DATA.filter(
-    x => x.traction === traction && x.system === system
+function viewFlow(f) {
+  const sections = f.sections || {};
+
+  const dnp = !!f.do_not_proceed;
+
+  const sectionBlock = (label, klass, content) =>
+    el("div", { class: `section ${klass}` }, [
+      el("div", { class: "section-title" }, label),
+      el("div", { class: "p", html: esc(content || "—") })
+    ]);
+
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, `Table ${f.table_no} — ${f.title || ""}`),
+      dnp ? el("div", { class: "banner" }, "DO NOT PROCEED") : null,
+
+      sectionBlock("Entering Service", "blue", sections["Entering Service"]),
+      sectionBlock("In Service", "red", sections["In Service"]),
+      sectionBlock("Removing From Service", "orange", sections["Removing From Service"]),
+      sectionBlock("Reporting / Notes", "green", sections["Reporting / Notes"]),
+
+      el("div", { class: "p", html: `<strong>Source:</strong> ${esc(f.source || ("Table " + f.table_no))} • Dataset: V1` }),
+
+      el("button", { class: "secondary", onClick: () => (state.traction ? tableListScreen(state.traction) : tableListScreen(null)) }, "Back"),
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
   );
-
-  const buttons = tables.map(t =>
-    el("button",
-      { class: "primary", onClick: () => viewTable(t.table) },
-      "Table " + t.table
-    )
-  );
-
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "Select table"),
-    ...buttons
-  ]);
-
-  setScreen(card);
 }
 
-function viewTable(tableNumber) {
-  const table = DATA.find(x => x.table === tableNumber);
+function searchScreen() {
+  const input = el("input", {
+    class: "searchbox",
+    placeholder: "Search (e.g. AWS, brakes, Table 9, 16x)…",
+    value: state.query || "",
+    onInput: (e) => {
+      state.query = e.target.value;
+      renderSearchResults(e.target.value);
+    }
+  });
 
-  if (!table) {
-    showError("Table not found.");
-    return;
-  }
+  const results = el("div", { id: "searchResults" });
 
-  const sections = Object.entries(table.sections).map(([k, v]) =>
-    el("div", { class: "section" }, [
-      el("div", { class: "section-title" }, k),
-      el("div", { class: "p" }, v)
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "Search tables"),
+      input,
+      results,
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
 
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "Table " + table.table),
-    ...sections,
-    el("button",
-      { class: "secondary", onClick: () => home() },
-      "Home"
-    )
-  ]);
-
-  setScreen(card);
+  renderSearchResults(state.query || "");
 }
 
-function searchTables() {
-  const input = el("input", {
-    placeholder: "Search table text...",
-    onInput: (e) => performSearch(e.target.value)
-  });
-
-  const container = el("div", { id: "searchResults" });
-
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, "Search"),
-    input,
-    container
-  ]);
-
-  setScreen(card);
-}
-
-function performSearch(term) {
+function renderSearchResults(q) {
   const container = document.getElementById("searchResults");
+  if (!container) return;
   container.innerHTML = "";
 
-  const results = DATA.filter(x =>
-    JSON.stringify(x).toLowerCase().includes(term.toLowerCase())
-  );
+  const term = String(q || "").trim().toLowerCase();
+  if (!term) {
+    container.appendChild(el("div", { class: "p" }, "Type to search…"));
+    return;
+  }
 
-  results.slice(0, 20).forEach(r => {
+  const hits = FLOWS.filter(f => {
+    const hay = [
+      f.id, f.table_no, f.title, f.traction, f.source,
+      f.sections?.["Entering Service"],
+      f.sections?.["In Service"],
+      f.sections?.["Removing From Service"],
+      f.sections?.["Reporting / Notes"]
+    ].join(" | ").toLowerCase();
+
+    // allow table number exact hit
+    if (/^\d+$/.test(term) && String(f.table_no) === term) return true;
+
+    return hay.includes(term);
+  }).slice(0, 40);
+
+  if (!hits.length) {
+    container.appendChild(el("div", { class: "p" }, "No matches found."));
+    return;
+  }
+
+  hits.forEach(f => {
     container.appendChild(
-      el("button",
-        { class: "secondary", onClick: () => viewTable(r.table) },
-        "Table " + r.table
+      el("button", { class: "primary", onClick: () => viewFlow(f) },
+        `Table ${f.table_no} — ${f.title || ""}`
       )
     );
   });
+
+  container.appendChild(el("div", { class: "p" }, "Showing up to 40 results."));
 }
 
 /* ============================= */
 /* Boot                           */
 /* ============================= */
-
 async function boot() {
   showLoading();
-
   try {
-    const resp = await fetch("data.json?v=4");
-    if (!resp.ok) throw new Error("Failed to load dataset.");
+    const resp = await fetch("data.json?v=5");
+    if (!resp.ok) throw new Error("Failed to load data.json (" + resp.status + ")");
 
     DATA = await resp.json();
+    FLOWS = Array.isArray(DATA.flows) ? DATA.flows : [];
 
-    // Service worker disabled for now
+    if (!FLOWS.length) throw new Error("Dataset loaded, but DATA.flows is empty.");
+
+    // Service worker disabled for now (we’ll re-enable once stable)
 
     home();
   } catch (e) {
-    showError(e.message);
+    showError(e.message || String(e));
   }
 }
 
