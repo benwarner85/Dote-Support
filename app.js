@@ -52,59 +52,86 @@ function esc(s) {
 }
 
 /* ============================= */
+/* Normalisation + Matching       */
+/* ============================= */
+function norm(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replaceAll("&", "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/* ============================= */
 /* Helpers                        */
 /* ============================= */
 const STAGES = ["Entering Service", "In Service", "Removing From Service", "Reporting / Notes"];
 
-// A small set of “common traction” buttons to reduce clutter,
-// but still matches mixed traction labels via "contains".
+// Small “common traction” set to reduce clutter.
+// We match these against free-text traction labels in the dataset.
 const COMMON_TRACTION = [
-  { label: "Class 16x", tokens: ["16x", "class 16x"] },
-  { label: "Class 150 / 158", tokens: ["150", "158", "150/2", "class 150", "class 158"] },
+  { label: "Class 16x", tokens: ["16x", "class 16x", "165", "166", "167"] },
+  { label: "Class 150 / 158", tokens: ["150", "150/2", "class 150", "158", "class 158"] },
   { label: "Class 387 (incl Air Fleet)", tokens: ["387", "class 387", "air fleet"] },
-  { label: "Class 80x", tokens: ["80x", "class 80x"] },
+  { label: "Class 80x", tokens: ["80x", "class 80x", "800", "802", "803"] },
   { label: "Other / All traction", tokens: null },
 ];
 
 function flowTractionMatches(flow, tokens) {
   if (!tokens) return true; // All traction
-  const tr = String(flow.traction || "").toLowerCase();
-  return tokens.some(t => tr.includes(String(t).toLowerCase()));
+
+  const tr = norm(flow.traction);
+  const tokenList = (tokens || []).map(t => norm(t)).filter(Boolean);
+
+  // General contains match
+  return tokenList.some(t => tr.includes(t));
 }
 
 function getUniqueSystemsFor(tokens) {
   const set = new Set();
+
+  // First: systems that match the chosen traction
   FLOWS.forEach(f => {
     if (flowTractionMatches(f, tokens)) {
       const sys = (f.system || "").trim();
       if (sys) set.add(sys);
     }
   });
-  return [...set].sort((a,b)=>a.localeCompare(b));
+
+  // Fallback: if none found, show all systems (prevents dead-end screen)
+  if (set.size === 0) {
+    FLOWS.forEach(f => {
+      const sys = (f.system || "").trim();
+      if (sys) set.add(sys);
+    });
+  }
+
+  return [...set].sort((a, b) => a.localeCompare(b));
 }
 
 function scoreFlow(flow, stage, keywords) {
   let score = 0;
 
-  // Stage relevance: if stage section exists and non-empty, boost
+  // Stage relevance
   const sec = flow.sections?.[stage];
   if (sec && String(sec).trim().length > 0) score += 5;
 
   const kw = String(keywords || "").trim().toLowerCase();
   if (!kw) return score;
 
-  const hay = [
+  const hay = norm([
     flow.title, flow.source, flow.traction, flow.system,
     flow.sections?.["Entering Service"],
     flow.sections?.["In Service"],
     flow.sections?.["Removing From Service"],
     flow.sections?.["Reporting / Notes"]
-  ].join(" | ").toLowerCase();
+  ].join(" | "));
 
-  // Simple keyword scoring
   const parts = kw.split(/\s+/).filter(Boolean);
   parts.forEach(p => {
-    if (hay.includes(p)) score += 2;
+    const pp = norm(p);
+    if (pp && hay.includes(pp)) score += 2;
   });
 
   return score;
@@ -261,13 +288,13 @@ function renderWizardResults() {
     .filter(f => flowTractionMatches(f, WIZ.tractionTokens))
     .filter(f => String(f.system || "").trim() === String(WIZ.system || "").trim());
 
-  // Score + sort
   const scored = matches
     .map(f => ({ f, score: scoreFlow(f, WIZ.stage, WIZ.keywords) }))
-    .sort((a,b)=> b.score - a.score || (a.f.table_no ?? 0) - (b.f.table_no ?? 0));
+    .sort((a, b) => b.score - a.score || (a.f.table_no ?? 0) - (b.f.table_no ?? 0));
 
   if (!scored.length) {
     container.appendChild(el("div", { class: "p" }, "No matches found for that selection."));
+    container.appendChild(el("div", { class: "p" }, "Tip: go back and choose a different system, or use Search."));
     return;
   }
 
@@ -277,7 +304,7 @@ function renderWizardResults() {
     el("div", { class: "p" }, `Showing top ${top.length} matches. Tap one:`)
   );
 
-  top.forEach(({ f, score }) => {
+  top.forEach(({ f }) => {
     const title = `Table ${f.table_no} — ${f.title || ""}`;
     container.appendChild(
       el("button", { class: "primary", onClick: () => viewOutcome(f) }, title)
@@ -342,20 +369,20 @@ function renderSearchResults(q) {
   if (!container) return;
   container.innerHTML = "";
 
-  const term = String(q || "").trim().toLowerCase();
+  const term = norm(q);
   if (!term) {
     container.appendChild(el("div", { class: "p" }, "Type to search…"));
     return;
   }
 
   const hits = FLOWS.filter(f => {
-    const hay = [
+    const hay = norm([
       f.id, f.table_no, f.title, f.traction, f.system, f.source,
       f.sections?.["Entering Service"],
       f.sections?.["In Service"],
       f.sections?.["Removing From Service"],
       f.sections?.["Reporting / Notes"]
-    ].join(" | ").toLowerCase();
+    ].join(" | "));
 
     if (/^\d+$/.test(term) && String(f.table_no) === term) return true;
     return hay.includes(term);
@@ -378,7 +405,6 @@ function renderSearchResults(q) {
 }
 
 function viewOutcomeFromSearch(flow) {
-  // If user came from search, show all sections
   const sections = flow.sections || {};
   const dnp = !!flow.do_not_proceed;
 
@@ -408,7 +434,7 @@ function viewOutcomeFromSearch(flow) {
 async function boot() {
   showLoading();
   try {
-    const resp = await fetch("data.json?v=6");
+    const resp = await fetch("data.json?v=7");
     if (!resp.ok) throw new Error("Failed to load data.json (" + resp.status + ")");
 
     DATA = await resp.json();
