@@ -1,12 +1,12 @@
-let DATA = null;   // full object: { meta, taxonomy, flows }
-let FLOWS = [];    // DATA.flows array
+let DATA = null;   // full JSON (either array or object)
+let FLOWS = [];    // normalized array of flows
 
 const WIZ = {
-  tractionTokens: null,  // array of tokens for contains-match, or null for All traction
-  tractionLabel: null,   // label shown to user
-  system: null,          // exact dataset system label
-  stage: null,           // one of the taxonomy stages
-  keywords: "",          // optional free text
+  tractionTokens: null,
+  tractionLabel: null,
+  system: null,
+  stage: null,
+  keywords: "",
 };
 
 /* ============================= */
@@ -51,9 +51,6 @@ function esc(s) {
     .replaceAll(">", "&gt;");
 }
 
-/* ============================= */
-/* Normalisation + Matching       */
-/* ============================= */
 function norm(s) {
   return String(s || "")
     .toLowerCase()
@@ -64,12 +61,10 @@ function norm(s) {
 }
 
 /* ============================= */
-/* Helpers                        */
+/* Wizard config                  */
 /* ============================= */
 const STAGES = ["Entering Service", "In Service", "Removing From Service", "Reporting / Notes"];
 
-// Small “common traction” set to reduce clutter.
-// We match these against free-text traction labels in the dataset.
 const COMMON_TRACTION = [
   { label: "Class 16x", tokens: ["16x", "class 16x", "165", "166", "167"] },
   { label: "Class 150 / 158", tokens: ["150", "150/2", "class 150", "158", "class 158"] },
@@ -79,19 +74,16 @@ const COMMON_TRACTION = [
 ];
 
 function flowTractionMatches(flow, tokens) {
-  if (!tokens) return true; // All traction
-
+  if (!tokens) return true;
   const tr = norm(flow.traction);
   const tokenList = (tokens || []).map(t => norm(t)).filter(Boolean);
-
-  // General contains match
   return tokenList.some(t => tr.includes(t));
 }
 
 function getUniqueSystemsFor(tokens) {
   const set = new Set();
 
-  // First: systems that match the chosen traction
+  // try filtered systems
   FLOWS.forEach(f => {
     if (flowTractionMatches(f, tokens)) {
       const sys = (f.system || "").trim();
@@ -99,7 +91,7 @@ function getUniqueSystemsFor(tokens) {
     }
   });
 
-  // Fallback: if none found, show all systems (prevents dead-end screen)
+  // fallback to all systems
   if (set.size === 0) {
     FLOWS.forEach(f => {
       const sys = (f.system || "").trim();
@@ -113,11 +105,10 @@ function getUniqueSystemsFor(tokens) {
 function scoreFlow(flow, stage, keywords) {
   let score = 0;
 
-  // Stage relevance
   const sec = flow.sections?.[stage];
   if (sec && String(sec).trim().length > 0) score += 5;
 
-  const kw = String(keywords || "").trim().toLowerCase();
+  const kw = norm(keywords);
   if (!kw) return score;
 
   const hay = norm([
@@ -128,10 +119,8 @@ function scoreFlow(flow, stage, keywords) {
     flow.sections?.["Reporting / Notes"]
   ].join(" | "));
 
-  const parts = kw.split(/\s+/).filter(Boolean);
-  parts.forEach(p => {
-    const pp = norm(p);
-    if (pp && hay.includes(pp)) score += 2;
+  kw.split(/\s+/).filter(Boolean).forEach(p => {
+    if (hay.includes(p)) score += 2;
   });
 
   return score;
@@ -203,7 +192,7 @@ function wizardTraction() {
   );
 }
 
-/* 2) System (dataset labels) */
+/* 2) System */
 function wizardSystem() {
   const systems = getUniqueSystemsFor(WIZ.tractionTokens);
 
@@ -252,7 +241,7 @@ function wizardStage() {
   );
 }
 
-/* 4) Optional keywords */
+/* 4) Keywords + results */
 function wizardKeywords() {
   const input = el("input", {
     class: "searchbox",
@@ -278,7 +267,6 @@ function wizardKeywords() {
   renderWizardResults();
 }
 
-/* 5) Results */
 function renderWizardResults() {
   const container = document.getElementById("wizResults");
   if (!container) return;
@@ -300,25 +288,21 @@ function renderWizardResults() {
 
   const top = scored.slice(0, 25);
 
-  container.appendChild(
-    el("div", { class: "p" }, `Showing top ${top.length} matches. Tap one:`)
-  );
+  container.appendChild(el("div", { class: "p" }, `Showing top ${top.length} matches. Tap one:`));
 
   top.forEach(({ f }) => {
-    const title = `Table ${f.table_no} — ${f.title || ""}`;
     container.appendChild(
-      el("button", { class: "primary", onClick: () => viewOutcome(f) }, title)
+      el("button", { class: "primary", onClick: () => viewOutcome(f) },
+        `Table ${f.table_no} — ${f.title || ""}`
+      )
     );
   });
 
   if (scored.length > 25) {
-    container.appendChild(
-      el("div", { class: "p" }, "More matches exist — add a keyword to narrow it down.")
-    );
+    container.appendChild(el("div", { class: "p" }, "More matches exist — add a keyword to narrow it down."));
   }
 }
 
-/* Outcome view: show only the chosen stage section + banner */
 function viewOutcome(flow) {
   const stageText = flow.sections?.[WIZ.stage] || "—";
   const dnp = !!flow.do_not_proceed;
@@ -328,14 +312,11 @@ function viewOutcome(flow) {
       el("div", { class: "h1" }, `Outcome — Table ${flow.table_no}`),
       el("div", { class: "p" }, `${flow.title || ""}`),
       dnp ? el("div", { class: "banner" }, "DO NOT PROCEED") : null,
-
       el("div", { class: "section" }, [
         el("div", { class: "section-title" }, WIZ.stage),
         el("div", { class: "p", html: esc(stageText) })
       ]),
-
       el("div", { class: "p", html: `<strong>Source:</strong> ${esc(flow.source || ("Table " + flow.table_no))} • Dataset: V1` }),
-
       el("button", { class: "secondary", onClick: () => wizardKeywords() }, "Back to results"),
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
@@ -434,15 +415,17 @@ function viewOutcomeFromSearch(flow) {
 async function boot() {
   showLoading();
   try {
-    const resp = await fetch("data.json?v=7");
+    const resp = await fetch("data.json?v=8");
     if (!resp.ok) throw new Error("Failed to load data.json (" + resp.status + ")");
 
     DATA = await resp.json();
-    FLOWS = Array.isArray(DATA.flows) ? DATA.flows : [];
 
-    if (!FLOWS.length) throw new Error("Dataset loaded, but DATA.flows is empty.");
+    // ✅ Support BOTH dataset shapes:
+    // 1) Array: [ {...}, {...} ]
+    // 2) Object: { flows: [ ... ] }
+    FLOWS = Array.isArray(DATA) ? DATA : (Array.isArray(DATA.flows) ? DATA.flows : []);
 
-    // Service worker disabled for now (we’ll re-enable once stable)
+    if (!FLOWS.length) throw new Error("Dataset loaded, but no flows were found (check data.json structure).");
 
     home();
   } catch (e) {
