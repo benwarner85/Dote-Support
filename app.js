@@ -76,17 +76,44 @@ function home() {
 }
 
 function tractionScreen() {
-  const tractions = [...new Set(FLOWS.map(f => (f.traction || "").trim()).filter(Boolean))].sort();
+  const card = el("div", { class: "card" }, [
+    el("div", { class: "h1" }, "What traction are you driving?"),
+    el("div", { class: "p" }, "Choose a common option (matches all relevant variants in the dataset)."),
 
-  const list = tractions.map(t =>
-    el("button", { class: "primary", onClick: () => tableListScreen(t) }, t)
-  );
+    el("button", { class: "primary", onClick: () => tableListScreenByContains(["16x", "Class 16x"]) }, "Class 16x"),
+    el("button", { class: "primary", onClick: () => tableListScreenByContains(["150", "158", "150/2", "Class 150", "Class 158"]) }, "Class 150 / 158"),
+    el("button", { class: "primary", onClick: () => tableListScreenByContains(["387", "Class 387", "Air Fleet"]) }, "Class 387 (incl Air Fleet)"),
+    el("button", { class: "primary", onClick: () => tableListScreenByContains(["80x", "Class 80x"]) }, "Class 80x"),
+    el("button", { class: "secondary", onClick: () => tableListScreen(null) }, "All traction"),
+
+    el("button", { class: "secondary", onClick: () => searchScreen() }, "Search instead"),
+    el("button", { class: "secondary", onClick: () => home() }, "Home"),
+  ]);
+
+  setScreen(card);
+}
+
+function tableListScreenByContains(tokens) {
+  const toks = (tokens || []).map(t => String(t).toLowerCase());
+
+  const matches = FLOWS
+    .filter(f => {
+      const tr = String(f.traction || "").toLowerCase();
+      return toks.some(t => tr.includes(t));
+    })
+    .sort((a, b) => (a.table_no ?? 0) - (b.table_no ?? 0));
 
   setScreen(
     el("div", { class: "card" }, [
-      el("div", { class: "h1" }, "What traction are you driving?"),
-      ...list,
-      el("button", { class: "secondary", onClick: () => tableListScreen(null) }, "All traction"),
+      el("div", { class: "h1" }, "Select table"),
+      el("div", { class: "p" }, "Filtered by traction (includes mixed traction labels)."),
+      ...matches.slice(0, 120).map(f =>
+        el("button", { class: "primary", onClick: () => viewFlow(f) },
+          `Table ${f.table_no} — ${f.title || ""}`
+        )
+      ),
+      matches.length > 120 ? el("div", { class: "p" }, "Showing first 120. Use Search for more.") : null,
+      el("button", { class: "secondary", onClick: () => tractionScreen() }, "Back"),
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
