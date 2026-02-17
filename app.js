@@ -187,11 +187,10 @@ async function boot() {
 
     DATA = await resp.json();
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("sw.js");
-    }
+// 🚫 Service worker disabled for now
 
-    home();
+home();
+    
   } catch (e) {
     showError(e.message);
   }
