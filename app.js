@@ -4,9 +4,6 @@ let FLOWS = [];
 const WIZ = {
   tractionTokens: null,
   tractionLabel: null,
-  system: null,
-  stage: null,
-  keywords: "",
 };
 
 function el(tag, attrs = {}, children = []) {
@@ -57,8 +54,9 @@ function norm(s) {
     .trim();
 }
 
-/* Wizard config */
-const STAGES = ["Entering Service", "In Service", "Removing From Service", "Reporting / Notes"];
+/* ============= */
+/* Traction setup */
+/* ============= */
 
 const COMMON_TRACTION = [
   { label: "Class 16x", tokens: ["16x", "165", "166", "167"] },
@@ -75,53 +73,15 @@ function flowTractionMatches(flow, tokens) {
   return list.some(t => tr.includes(t));
 }
 
-/* Robust getters (we'll validate with Debug) */
-function getSystemLabel(flow) {
-  return (
-    flow.system ||
-    flow.system_label ||
-    flow.system_name ||
-    flow.category ||
-    flow.group ||
-    flow.area ||
-    (flow.labels && (flow.labels.system || flow.labels.category)) ||
-    ""
-  ).toString().trim();
-}
-
-function getTitle(flow) {
-  return (flow.title || flow.fault || flow.name || "").toString().trim();
-}
-
-function getUniqueSystemsFor(tokens) {
-  const set = new Set();
-
-  FLOWS.forEach(f => {
-    if (flowTractionMatches(f, tokens)) {
-      const sys = getSystemLabel(f);
-      if (sys) set.add(sys);
-    }
-  });
-
-  if (set.size === 0) {
-    FLOWS.forEach(f => {
-      const sys = getSystemLabel(f);
-      if (sys) set.add(sys);
-    });
-  }
-
-  return [...set].sort((a, b) => a.localeCompare(b));
-}
-
 function resetWizard() {
   WIZ.tractionTokens = null;
   WIZ.tractionLabel = null;
-  WIZ.system = null;
-  WIZ.stage = null;
-  WIZ.keywords = "";
 }
 
-/* Screens */
+/* ============= */
+/* Screens        */
+/* ============= */
+
 function showLoading() {
   setScreen(
     el("div", { class: "card" }, [
@@ -136,7 +96,7 @@ function showError(message) {
     el("div", { class: "card" }, [
       el("div", { class: "h1" }, "Could not load app"),
       el("div", { class: "p", html: esc(message) }),
-      el("div", { class: "p" }, "Try Private tab (Safari cache).")
+      el("div", { class: "p" }, "Tip: open in a Private tab if Safari is caching old files.")
     ])
   );
 }
@@ -145,61 +105,21 @@ function home() {
   setScreen(
     el("div", { class: "card" }, [
       el("div", { class: "h1" }, "DOTE Decision Support (V1)"),
-      el("button", { class: "primary", onClick: () => { resetWizard(); wizardTraction(); } }, "Start fault guidance"),
-      el("button", { class: "secondary", onClick: () => datasetDebug() }, "Dataset debug"),
+      el("button", { class: "primary", onClick: () => { resetWizard(); tractionScreen(); } }, "Start fault guidance"),
+      el("button", { class: "secondary", onClick: () => searchAllScreen() }, "Search all tables")
     ])
   );
 }
 
-/* DEBUG SCREEN */
-function datasetDebug() {
-  const first = FLOWS && FLOWS.length ? FLOWS[0] : null;
-  const keys = first ? Object.keys(first).sort() : [];
-
-  const sampleSystem = first ? {
-    system: first.system,
-    system_label: first.system_label,
-    system_name: first.system_name,
-    category: first.category,
-    group: first.group,
-    area: first.area,
-    labels: first.labels
-  } : null;
-
-  setScreen(
-    el("div", { class: "card" }, [
-      el("div", { class: "h1" }, "Dataset debug"),
-      el("div", { class: "p" }, `Flows loaded: ${FLOWS.length}`),
-      el("div", { class: "p" }, `First flow keys (${keys.length}):`),
-      el("div", { class: "p", html: `<code>${esc(keys.join(", "))}</code>` }),
-
-      el("div", { class: "p" }, "Likely system fields (first flow):"),
-      el("div", { class: "p", html: `<code>${esc(JSON.stringify(sampleSystem, null, 2))}</code>` }),
-
-      el("div", { class: "p" }, "First flow traction + title:"),
-      el("div", { class: "p", html: `<code>${esc(JSON.stringify({
-        traction: first?.traction,
-        title: getTitle(first),
-        system_guess: getSystemLabel(first)
-      }, null, 2))}</code>` }),
-
-      el("button", { class: "secondary", onClick: () => home() }, "Home")
-    ])
-  );
-}
-
-/* 1) Traction */
-function wizardTraction() {
+/* 1) Traction screen (clean list) */
+function tractionScreen() {
   const btns = COMMON_TRACTION.map(t =>
     el("button", {
       class: "primary",
       onClick: () => {
         WIZ.tractionTokens = t.tokens;
         WIZ.tractionLabel = t.label;
-        WIZ.system = null;
-        WIZ.stage = null;
-        WIZ.keywords = "";
-        wizardSystem();
+        tableListScreen();
       }
     }, t.label)
   );
@@ -207,46 +127,179 @@ function wizardTraction() {
   setScreen(
     el("div", { class: "card" }, [
       el("div", { class: "h1" }, "What traction are you driving?"),
+      el("div", { class: "p" }, "Pick a simple option — we match it to the full dataset automatically."),
       ...btns,
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
 }
 
-/* 2) System */
-function wizardSystem() {
-  const systems = getUniqueSystemsFor(WIZ.tractionTokens);
+/* 2) Table list screen (filtered by traction) */
+function tableListScreen() {
+  const matches = FLOWS
+    .filter(f => flowTractionMatches(f, WIZ.tractionTokens))
+    .slice()
+    .sort((a, b) => (a.table_no ?? 0) - (b.table_no ?? 0));
 
-  const btns = systems.map(s =>
-    el("button", {
-      class: "primary",
-      onClick: () => alert("System tapped: " + s) // temporary - proves buttons render
-    }, s)
-  );
+  // Simple in-page search (filters titles)
+  let currentFilter = "";
+
+  const resultsBox = el("div", { id: "tableResults" });
+
+  const input = el("input", {
+    class: "searchbox",
+    placeholder: "Filter table titles (optional)…",
+    onInput: (e) => {
+      currentFilter = norm(e.target.value);
+      renderTableButtons(matches, resultsBox, currentFilter);
+    }
+  });
 
   setScreen(
     el("div", { class: "card" }, [
-      el("div", { class: "h1" }, "What system is affected?"),
+      el("div", { class: "h1" }, "Select a table"),
       el("div", { class: "p" }, `Traction: ${WIZ.tractionLabel || "All traction"}`),
-
-      systems.length
-        ? el("div", {}, btns)
-        : el("div", { class: "p" }, "No systems found. Tap Home → Dataset debug and send me that screen."),
-
-      el("button", { class: "secondary", onClick: () => wizardTraction() }, "Back"),
+      input,
+      resultsBox,
+      el("button", { class: "secondary", onClick: () => tractionScreen() }, "Back"),
       el("button", { class: "secondary", onClick: () => home() }, "Home"),
     ])
   );
+
+  renderTableButtons(matches, resultsBox, currentFilter);
+}
+
+function renderTableButtons(matches, container, filterTerm) {
+  container.innerHTML = "";
+
+  const filtered = !filterTerm
+    ? matches
+    : matches.filter(f => norm(f.title).includes(filterTerm) || String(f.table_no || "").includes(filterTerm));
+
+  if (!filtered.length) {
+    container.appendChild(el("div", { class: "p" }, "No tables match that filter."));
+    return;
+  }
+
+  // Keep it usable on phone: show first 60, user can filter to narrow
+  const show = filtered.slice(0, 60);
+
+  show.forEach(f => {
+    const label = `Table ${f.table_no} — ${f.title || "(no title)"}`;
+    container.appendChild(
+      el("button", { class: "primary", onClick: () => tableDetailScreen(f) }, label)
+    );
+  });
+
+  if (filtered.length > 60) {
+    container.appendChild(
+      el("div", { class: "p" }, `Showing 60 of ${filtered.length}. Type in the filter box to narrow it down.`)
+    );
+  }
+}
+
+/* 3) Table detail screen (sections) */
+function tableDetailScreen(flow) {
+  const sections = flow.sections || {};
+  const dnp = !!flow.do_not_proceed;
+
+  const block = (label, content) =>
+    el("div", { class: "section" }, [
+      el("div", { class: "section-title" }, label),
+      el("div", { class: "p", html: esc(content || "—") })
+    ]);
+
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, `Table ${flow.table_no} — ${flow.title || ""}`),
+      dnp ? el("div", { class: "banner" }, "DO NOT PROCEED") : null,
+
+      block("Entering Service", sections["Entering Service"]),
+      block("In Service", sections["In Service"]),
+      block("Removing From Service", sections["Removing From Service"]),
+      block("Reporting / Notes", sections["Reporting / Notes"]),
+
+      el("div", { class: "p", html: `<strong>Traction:</strong> ${esc(flow.traction || "—")}<br><strong>Source:</strong> ${esc(flow.source || "—")}` }),
+
+      el("button", { class: "secondary", onClick: () => tableListScreen() }, "Back to table list"),
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
+  );
+}
+
+/* Search all tables (no traction filter) */
+function searchAllScreen() {
+  const results = el("div", { id: "searchResults" });
+
+  const input = el("input", {
+    class: "searchbox",
+    placeholder: "Search anything (e.g. AWS, brakes, Table 9, deer)…",
+    onInput: (e) => renderSearchAllResults(e.target.value, results)
+  });
+
+  setScreen(
+    el("div", { class: "card" }, [
+      el("div", { class: "h1" }, "Search all tables"),
+      input,
+      results,
+      el("button", { class: "secondary", onClick: () => home() }, "Home"),
+    ])
+  );
+
+  renderSearchAllResults("", results);
+}
+
+function renderSearchAllResults(q, container) {
+  container.innerHTML = "";
+  const term = norm(q);
+
+  if (!term) {
+    container.appendChild(el("div", { class: "p" }, "Type to search…"));
+    return;
+  }
+
+  const hits = FLOWS.filter(f => {
+    const hay = norm([
+      f.table_no,
+      f.title,
+      f.traction,
+      f.source,
+      f.search,
+      f.sections?.["Entering Service"],
+      f.sections?.["In Service"],
+      f.sections?.["Removing From Service"],
+      f.sections?.["Reporting / Notes"]
+    ].join(" | "));
+
+    if (/^\d+$/.test(term) && String(f.table_no) === term) return true;
+    return hay.includes(term);
+  }).slice(0, 50);
+
+  if (!hits.length) {
+    container.appendChild(el("div", { class: "p" }, "No matches found."));
+    return;
+  }
+
+  hits.forEach(f => {
+    container.appendChild(
+      el("button", { class: "primary", onClick: () => tableDetailScreen(f) },
+        `Table ${f.table_no} — ${f.title || "(no title)"}`
+      )
+    );
+  });
+
+  container.appendChild(el("div", { class: "p" }, "Showing up to 50 matches."));
 }
 
 /* Boot */
 async function boot() {
   showLoading();
   try {
-    const resp = await fetch("data.json?v=10");
+    const resp = await fetch("data.json?v=11");
     if (!resp.ok) throw new Error("Failed to load data.json (" + resp.status + ")");
     DATA = await resp.json();
 
+    // Support both shapes: {flows:[...]} OR [...]
     FLOWS = Array.isArray(DATA) ? DATA : (Array.isArray(DATA.flows) ? DATA.flows : []);
     if (!FLOWS.length) throw new Error("Dataset loaded but no flows found.");
 
