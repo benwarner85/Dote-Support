@@ -1,20 +1,28 @@
 let DATA = null;
 
+/* ============================= */
+/* Safe DOM Builder (Safari OK)  */
+/* ============================= */
+
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
 
   Object.entries(attrs).forEach(([k, v]) => {
+
+    // Real click handlers
+    if ((k === "onClick" || k === "onclick") && typeof v === "function") {
+      node.addEventListener("click", v);
+      return;
+    }
+
     if (k === "html") node.innerHTML = v;
-    else node.setAttribute(k, v);
+    else if (v !== undefined && v !== null) node.setAttribute(k, v);
   });
 
   (Array.isArray(children) ? children : [children]).forEach(c => {
     if (!c) return;
-    if (typeof c === "string") {
-      node.appendChild(document.createTextNode(c));
-    } else if (c instanceof Node) {
-      node.appendChild(c);
-    }
+    if (typeof c === "string") node.appendChild(document.createTextNode(c));
+    else if (c instanceof Node) node.appendChild(c);
   });
 
   return node;
@@ -26,10 +34,14 @@ function setScreen(content) {
   root.appendChild(content);
 }
 
+/* ============================= */
+/* Screens                        */
+/* ============================= */
+
 function showLoading() {
   const card = el("div", { class: "card" }, [
     el("div", { class: "h1" }, "Loading…"),
-    el("div", { class: "p" }, "Fetching dataset. First load can take a moment.")
+    el("div", { class: "p" }, "Fetching dataset.")
   ]);
   setScreen(card);
 }
@@ -44,14 +56,14 @@ function showError(message) {
 
 function home() {
   const card = el("div", { class: "card" }, [
-    el("button", {
-      class: "primary",
-      onclick: "startGuidance()"
-    }, "Start fault guidance"),
-    el("button", {
-      class: "secondary",
-      onclick: "searchTables()"
-    }, "Search tables")
+    el("button",
+      { class: "primary", onClick: () => startGuidance() },
+      "Start fault guidance"
+    ),
+    el("button",
+      { class: "secondary", onClick: () => searchTables() },
+      "Search tables"
+    )
   ]);
 
   setScreen(card);
@@ -61,10 +73,10 @@ function startGuidance() {
   const options = [...new Set(DATA.map(x => x.traction))];
 
   const buttons = options.map(t =>
-    el("button", {
-      class: "primary",
-      onclick: `selectTraction("${t}")`
-    }, t)
+    el("button",
+      { class: "primary", onClick: () => selectTraction(t) },
+      t
+    )
   );
 
   const card = el("div", { class: "card" }, [
@@ -82,10 +94,10 @@ function selectTraction(traction) {
   )];
 
   const buttons = systems.map(s =>
-    el("button", {
-      class: "primary",
-      onclick: `selectSystem("${traction}","${s}")`
-    }, s)
+    el("button",
+      { class: "primary", onClick: () => selectSystem(traction, s) },
+      s
+    )
   );
 
   const card = el("div", { class: "card" }, [
@@ -102,10 +114,10 @@ function selectSystem(traction, system) {
   );
 
   const buttons = tables.map(t =>
-    el("button", {
-      class: "primary",
-      onclick: `viewTable(${t.table})`
-    }, `Table ${t.table}`)
+    el("button",
+      { class: "primary", onClick: () => viewTable(t.table) },
+      "Table " + t.table
+    )
   );
 
   const card = el("div", { class: "card" }, [
@@ -132,12 +144,12 @@ function viewTable(tableNumber) {
   );
 
   const card = el("div", { class: "card" }, [
-    el("div", { class: "h1" }, `Table ${table.table}`),
+    el("div", { class: "h1" }, "Table " + table.table),
     ...sections,
-    el("button", {
-      class: "secondary",
-      onclick: "home()"
-    }, "Home")
+    el("button",
+      { class: "secondary", onClick: () => home() },
+      "Home"
+    )
   ]);
 
   setScreen(card);
@@ -146,7 +158,7 @@ function viewTable(tableNumber) {
 function searchTables() {
   const input = el("input", {
     placeholder: "Search table text...",
-    oninput: "performSearch(this.value)"
+    onInput: (e) => performSearch(e.target.value)
   });
 
   const container = el("div", { id: "searchResults" });
@@ -161,36 +173,39 @@ function searchTables() {
 }
 
 function performSearch(term) {
+  const container = document.getElementById("searchResults");
+  container.innerHTML = "";
+
   const results = DATA.filter(x =>
     JSON.stringify(x).toLowerCase().includes(term.toLowerCase())
   );
 
-  const container = document.getElementById("searchResults");
-  container.innerHTML = "";
-
   results.slice(0, 20).forEach(r => {
     container.appendChild(
-      el("button", {
-        class: "secondary",
-        onclick: `viewTable(${r.table})`
-      }, `Table ${r.table}`)
+      el("button",
+        { class: "secondary", onClick: () => viewTable(r.table) },
+        "Table " + r.table
+      )
     );
   });
 }
+
+/* ============================= */
+/* Boot                           */
+/* ============================= */
 
 async function boot() {
   showLoading();
 
   try {
-    const resp = await fetch("data.json?v=2");
+    const resp = await fetch("data.json?v=4");
     if (!resp.ok) throw new Error("Failed to load dataset.");
 
     DATA = await resp.json();
 
-// 🚫 Service worker disabled for now
+    // Service worker disabled for now
 
-home();
-    
+    home();
   } catch (e) {
     showError(e.message);
   }
