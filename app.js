@@ -142,11 +142,37 @@ function escapeHtml(str){
     .replaceAll(">","&gt;");
 }
 
+function showLoading(){
+  const card = el("div",{class:"card"},[
+    el("div",{class:"h1",html:"Loading…"}),
+    el("div",{class:"p",html:"Fetching dataset. First load can take a moment."})
+  ]);
+  setScreen(card);
+}
+
 async function boot(){
-  DATA = await fetch("data.json").then(r=>r.json());
-  if("serviceWorker" in navigator){
-    navigator.serviceWorker.register("sw.js");
+  showLoading();
+
+  try{
+    // cache-bust to avoid stale cached copies
+    const resp = await fetch("data.json?v=1");
+    if(!resp.ok) throw new Error("data.json failed: " + resp.status);
+
+    DATA = await resp.json();
+
+    if("serviceWorker" in navigator){
+      navigator.serviceWorker.register("sw.js");
+    }
+
+    home();
+  }catch(e){
+    const card = el("div",{class:"card"},[
+      el("div",{class:"h1",html:"Could not load app"}),
+      el("div",{class:"p",html:"This usually means a JavaScript error or a cached old file."}),
+      el("div",{class:"p",html:"Try reloading in a Private tab, or clear Website Data for github.io."}),
+      el("div",{class:"kicker",html:String(e)})
+    ]);
+    setScreen(card);
   }
-  home();
 }
 boot();
