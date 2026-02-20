@@ -66,9 +66,33 @@ const COMMON_TRACTION = [
   { label: "All traction", tokens: null },
 ];
 
+/**
+ * FIXED MATCHING:
+ * If the user selects a specific class, we include:
+ *  - tables matching that class tokens
+ *  - PLUS "universal" tables (All traction / All fitted traction / etc.)
+ */
 function flowTractionMatches(flow, tokens) {
-  if (!tokens) return true;
   const tr = norm(flow.traction);
+
+  // User selected "All traction"
+  if (!tokens) return true;
+
+  // Universal / applies-to-all tables should appear under any traction selection
+  const UNIVERSAL = [
+    "all traction",
+    "all fitted traction",
+    "all tractions",
+    "all units",
+    "all trains",
+    "all stock",
+    "all traction excluding",
+    "all traction - excluding"
+  ];
+
+  if (UNIVERSAL.some(u => tr.includes(u))) return true;
+
+  // Otherwise match the specific class tokens
   const list = tokens.map(norm).filter(Boolean);
   return list.some(t => tr.includes(t));
 }
@@ -141,9 +165,7 @@ function tableListScreen() {
     .slice()
     .sort((a, b) => (a.table_no ?? 0) - (b.table_no ?? 0));
 
-  // Simple in-page search (filters titles)
   let currentFilter = "";
-
   const resultsBox = el("div", { id: "tableResults" });
 
   const input = el("input", {
@@ -174,14 +196,16 @@ function renderTableButtons(matches, container, filterTerm) {
 
   const filtered = !filterTerm
     ? matches
-    : matches.filter(f => norm(f.title).includes(filterTerm) || String(f.table_no || "").includes(filterTerm));
+    : matches.filter(f =>
+        norm(f.title).includes(filterTerm) ||
+        String(f.table_no || "").includes(filterTerm)
+      );
 
   if (!filtered.length) {
     container.appendChild(el("div", { class: "p" }, "No tables match that filter."));
     return;
   }
 
-  // Keep it usable on phone: show first 60, user can filter to narrow
   const show = filtered.slice(0, 60);
 
   show.forEach(f => {
@@ -295,11 +319,10 @@ function renderSearchAllResults(q, container) {
 async function boot() {
   showLoading();
   try {
-    const resp = await fetch("data.json?v=11");
+    const resp = await fetch("data.json?v=12");
     if (!resp.ok) throw new Error("Failed to load data.json (" + resp.status + ")");
     DATA = await resp.json();
 
-    // Support both shapes: {flows:[...]} OR [...]
     FLOWS = Array.isArray(DATA) ? DATA : (Array.isArray(DATA.flows) ? DATA.flows : []);
     if (!FLOWS.length) throw new Error("Dataset loaded but no flows found.");
 
